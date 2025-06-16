@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       targets:
-        description: '要构建的平台，逗号分隔（例: linux32,macos,windows64），不填或 all 则全跑'
+        description: '要构建的平台，逗号分隔（例: linux32,macos,windows64）；不填或 all 则全跑'
         required: false
         default: 'all'
 
@@ -42,13 +42,9 @@ jobs:
             msystem: MINGW32
             artifact: stairspeedtest_reborn_win32
 
-    defaults:
-      run:
-        shell: ${{ matrix.os == 'windows-latest' && 'msys2 {0}' || 'bash' }}
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Skip if not in selected targets
         if: >
@@ -58,13 +54,6 @@ jobs:
         run: |
           echo "Skipping build for ${{ matrix.id }}"
           exit 0
-
-      - name: Add commit id into version
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        run: |
-          SHA=$(git rev-parse --short HEAD)
-          sed -i${{ matrix.os == 'macos-latest' && 'e' || '' }} \
-            's/\(v[0-9]\.[0-9]\.[0-9]\)/\1-'"$SHA"'/' src/version.h
 
       - name: Setup MSYS2 (Windows)
         if: ${{ matrix.os == 'windows-latest' }}
@@ -76,12 +65,22 @@ jobs:
             base-devel git mingw-w64-${{ matrix.msystem }}-{gcc,cmake,libevent,pcre2,freetype,
             libpng,bzip2,openssl,libsodium,c-ares,boost,libmariadbclient} unzip p7zip
 
+      - name: Add commit id into version
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        shell: bash
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          # macOS 下 sed 要加 -e，否则 Linux runner 下直接用 -i
+          SED_OPTS="-i${{ matrix.os == 'macos-latest' && 'e' || '' }}"
+          sed $SED_OPTS 's/\(v[0-9]\.[0-9]\.[0-9]\)/\1-'"$SHA"'/' src/version.h
+
       - name: Build
+        shell: bash
         run: |
           case "${{ matrix.id }}" in
             linux32|linux64)
               docker run \
-                -v $GITHUB_WORKSPACE:/root/workdir \
+                -v "$GITHUB_WORKSPACE":/root/workdir \
                 -e TRAVIS_BRANCH=action \
                 -e TRAVIS_TAG=action \
                 ${{ matrix.docker }} \
@@ -93,12 +92,13 @@ jobs:
               mv base stairspeedtest
               ;;
             windows32|windows64)
-              bash scripts/build.windows.maindeps.sh
-              bash scripts/build.windows.clients.sh
-              bash scripts/build.windows.release.sh
-              mv $USERPROFILE/clients/built/websocketd.exe base/tools/gui/
-              mv $USERPROFILE/clients/built base/tools/clients
-              mv base stairspeedtest
+              # 用 msys2 提供的 bash
+              bash -lc "bash scripts/build.windows.maindeps.sh &&
+                        bash scripts/build.windows.clients.sh &&
+                        bash scripts/build.windows.release.sh &&
+                        mv \$USERPROFILE/clients/built/websocketd.exe base/tools/gui/ &&
+                        mv \$USERPROFILE/clients/built base/tools/clients &&
+                        mv base stairspeedtest"
               ;;
           esac
 
@@ -110,7 +110,9 @@ jobs:
 
       - name: Package Release
         if: startsWith(github.ref, 'refs/tags/')
-        run: tar czf ${{ matrix.artifact }}.tar.gz stairspeedtest
+        shell: bash
+        run: |
+          tar czf "${{ matrix.artifact }}.tar.gz" stairspeedtest
 
       - name: Draft Release
         if: startsWith(github.ref, 'refs/tags/')
